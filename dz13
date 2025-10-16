@@ -1,0 +1,98 @@
+#Напишите скрипт, который будет производить сбор данных с выбранной страницы
+# на сайте ЦБ РФ, либо осуществлять загрузку xsl, xslx, pdf, csv или иного файла
+# с данными в рабочую директорию с последующим его парсингом.
+
+#У класса должен быть только один публичный метод start().
+# Все остальные методы, содержащие логику по выгрузке и сохранению данных, должны быть приватными.
+
+#Определите структуру для хранения. Например, для ключевой ставки ЦБ РФ это может быть словарь (dict),
+# где ключом будет выступать дата, а значением — размер ключевой ставки на указанную дату.
+
+#Оберните весь написанный код парсера в класс ParserCBRF
+
+import requests
+from bs4 import BeautifulSoup
+import json
+from datetime import datetime
+
+
+class ParserCBRF:
+    """
+    Парсер для сбора данных о ключевой ставке с сайта ЦБ РФ.
+    """
+    def __init__(self):
+        self.base_url = "https://cbr.ru/hd_base/keyrate/"
+        self.data = {}
+
+    def start(self):
+        """
+        Публичный метод для запуска процесса парсинга.
+        """
+        self._download_data()
+        self._save_to_json()
+
+    def _download_data(self):
+        """
+        Загружает и парсит веб-страницу с данными о ключевой ставке.
+        """
+        try:
+            response = requests.get(self.base_url, timeout=10)
+            response.raise_for_status()
+            self._parse_html(response.text)
+        except requests.exceptions.RequestException as e:
+            print(f"Ошибка при загрузке страницы: {e}")
+
+    def _parse_html(self, html_content):
+        """
+        Извлекает данные из HTML-таблицы.
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+        table = soup.find('table', {'class': 'data'})
+
+        if not table:
+            print("Таблица с данными не найдена")
+            return
+
+        for row in table.find_all('tr')[1:]:  # Пропускаем заголовок
+            cells = row.find_all('td')
+            if len(cells) >= 2:
+                date_str = cells[0].get_text(strip=True)
+                rate_str = cells[1].get_text(strip=True)
+                self._process_row(date_str, rate_str)
+
+    def _process_row(self, date_str, rate_str):
+        """
+        Обрабатывает строку данных и добавляет в словарь.
+        """
+        try:
+            date = self._parse_date(date_str)
+            rate = float(rate_str.replace(',', '.'))
+            self.data[date] = rate
+        except ValueError as e:
+            print(f"Ошибка обработки данных: {e}")
+
+    def _parse_date(self, date_str):
+        """
+        Преобразует дату из формата DD.MM.YYYY в YYYY-MM-DD.
+        """
+        try:
+            date_obj = datetime.strptime(date_str, '%d.%m.%Y')
+            return date_obj.strftime('%Y-%m-%d')
+        except ValueError:
+            return date_str
+
+    def _save_to_json(self):
+        """
+        Сохраняет собранные данные в JSON-файл.
+        """
+        try:
+            with open('key_rates.json', 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=4)
+            print("Данные успешно сохранены в key_rates.json")
+        except IOError as e:
+            print(f"Ошибка сохранения файла: {e}")
+
+
+if __name__ == "__main__":
+    parser = ParserCBRF()
+    parser.start()

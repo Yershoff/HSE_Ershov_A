@@ -1,0 +1,364 @@
+import os
+import json
+import requests
+from datetime import datetime, date, timedelta
+from bs4 import BeautifulSoup
+from decimal import Decimal
+import time
+
+
+class ParserCBRF:
+    """Парсер цен на драгоценные металлы с сайта ЦБ РФ"""
+
+    BASE_URL = "https://www.cbr.ru/hd_base/metall/metall_base_new/"
+
+    def __init__(self):
+        self.data = {}
+
+    def get_soup(self, from_date, to_date):
+        """Получаем HTML страницу с данными"""
+        params = {
+            'UniDbQuery.Posted': 'True',
+            'UniDbQuery.From': from_date,
+            'UniDbQuery.To': to_date,
+            'UniDbQuery.Gold': 'true',
+            'UniDbQuery.Silver': 'true',
+            'UniDbQuery.Platinum': 'true',
+            'UniDbQuery.Palladium': 'true',
+            'UniDbQuery.so': '1'
+        }
+
+        for attempt in range(3):
+            try:
+                response = requests.get(
+                    self.BASE_URL,
+                    params=params,
+                    timeout=30,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:143.0) Gecko/20100101 Firefox/143.0',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+                        'Accept-Encoding': 'gzip, deflate, br, zstd',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                    }
+                )
+                response.encoding = 'utf-8'
+
+                if response.status_code == 200:
+                    return BeautifulSoup(response.text, 'html.parser')
+                else:
+                    print(f"Ошибка HTTP {response.status_code}")
+                    time.sleep(2)
+                    continue
+
+            except Exception as e:
+                print(f"Ошибка при запросе: {e}")
+                time.sleep(2)
+                continue
+        return None
+
+    def parse_soup(self, soup):
+        """Парсим данные из HTML"""
+        try:
+            table = soup.find('table', {'class': 'data'})
+            if not table:
+                return None
+
+            data = {}
+            rows = table.find_all('tr')
+
+            for row in rows:
+                cells = row.find_all('td')
+                if len(cells) == 5:
+                    date_str = cells[0].text.strip()
+
+                    try:
+                        parsed_date = datetime.strptime(date_str, "%d.%m.%Y").date()
+                        iso_date = parsed_date.isoformat()
+
+                        prices = {
+                            'gold': self._parse_price(cells[1].text),
+                            'silver': self._parse_price(cells[2].text),
+                            'platinum': self._parse_price(cells[3].text),
+                            'palladium': self._parse_price(cells[4].text)
+                        }
+
+                        data[iso_date] = prices
+                        # Вывод всех металлов в формате как у преподавателя
+                        self._print_prices_for_date(date_str, prices)
+
+                    except ValueError:
+                        continue
+
+            return data
+
+        except Exception as e:
+            print(f"Ошибка парсинга: {e}")
+            return None
+
+    def _print_prices_for_date(self, date_str, prices):
+        """Вывод цен на все металлы для даты"""
+        print(f'Цены металлов на дату {date_str} -- '
+              f'Золото: {self._format_price(prices["gold"])} руб/г, '
+              f'Серебро: {self._format_price(prices["silver"])} руб/г, '
+              f'Платина: {self._format_price(prices["platinum"])} руб/г, '
+              f'Палладий: {self._format_price(prices["palladium"])} руб/г')
+
+    def _parse_price(self, price_text):
+        """Конвертируем цену в Decimal"""
+        try:
+            cleaned = price_text.strip().replace(' ', '').replace(',', '.')
+            return Decimal(cleaned) if cleaned else Decimal('0')
+        except:
+            return Decimal('0')
+
+    def _format_price(self, price):
+        """Форматирование цены с 4 знаками после запятой для удобства чтения"""
+        return f"{float(price):.4f}".replace('.', ',')
+
+    def start(self):
+        """Основной метод для запуска парсера"""
+        start_date = "01.07.2008"
+        end_date = date.today().strftime("%d.%m.%Y")
+
+        print(f"Начинаем парсинг с {start_date} по {end_date}")
+        print("Это может занять несколько минут...")
+
+        soup = self.get_soup(start_date, end_date)
+        if soup:
+            parsed_data = self.parse_soup(soup)
+            if parsed_data:
+                # Заполняем пробелы и выводим информацию
+                original_count = len(parsed_data)
+                self.data, filled_dates = self._fill_data_gaps(parsed_data)
+                filled_count = len(self.data)
+
+                # Выводим информацию о заполненных датах
+                if filled_dates:
+                    print("\nЗаполнены пробелы для нерабочих дней:")
+                    for filled_date in sorted(filled_dates)[:10]:  # Показываем первые 10
+                        date_obj = datetime.strptime(filled_date, "%Y-%m-%d").date()
+                        date_str = date_obj.strftime("%d.%m.%Y")
+                        prices = self.data[filled_date]
+                        print(f'Цены металлов на дату {date_str} -- '
+                              f'Золото: {self._format_price(prices["gold"])} руб/г, '
+                              f'Серебро: {self._format_price(prices["silver"])} руб/г, '
+                              f'Платина: {self._format_price(prices["platinum"])} руб/г, '
+                              f'Палладий: {self._format_price(prices["palladium"])} руб/г (заполнено)')
+                    if len(filled_dates) > 10:
+                        print(f"... и еще {len(filled_dates) - 10} дат")
+
+                print(f"\nИсходных записей: {original_count}")
+                print(f"После заполнения пробелов: {filled_count}")
+                print(f"Добавлено записей для нерабочих дней: {filled_count - original_count}")
+
+                self._save_to_json()
+                return True
+        return False
+
+    def _fill_data_gaps(self, data):
+        """Заполняем пробелы в данных (для нерабочих дней)"""
+        if not data:
+            return data, set()
+
+        sorted_dates = sorted(data.keys())
+        if not sorted_dates:
+            return data, set()
+
+        start_date = datetime.strptime(sorted_dates[0], "%Y-%m-%d").date()
+        end_date = datetime.strptime(sorted_dates[-1], "%Y-%m-%d").date()
+
+        filled_data = {}
+        current_prices = {}
+        filled_dates = set()
+
+        # Проходим по всем дням в диапазоне
+        current_date = start_date
+        while current_date <= end_date:
+            date_str = current_date.isoformat()
+
+            if date_str in data:
+                # Есть данные на эту дату - обновляем текущие цены
+                current_prices = data[date_str]
+                filled_data[date_str] = current_prices
+            else:
+                # Нет данных - используем последние известные цены
+                filled_data[date_str] = current_prices.copy()
+                if current_prices:  # Если есть предыдущие данные для заполнения
+                    filled_dates.add(date_str)
+
+            current_date += timedelta(days=1)
+
+        return filled_data, filled_dates
+
+    def _save_to_json(self):
+        """Сериализация данных в JSON в папку parsed_data"""
+        dir_path = os.path.join(os.path.dirname(__file__), 'parsed_data')
+        os.makedirs(dir_path, exist_ok=True)
+        file_path = os.path.join(dir_path, 'metal_prices.json')
+
+        serializable_data = {
+            date: {metal: str(price) for metal, price in prices.items()}
+            for date, prices in self.data.items()
+        }
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(serializable_data, f, indent=4, ensure_ascii=False)
+
+        print(f"\nДанные сохранены в: {file_path}")
+        print(f"Всего записей: {len(serializable_data)}")
+
+
+class MetalPricesCBRF:
+    """Класс для работы с сохраненными данными"""
+
+    METAL_NAMES = {
+        'gold': 'Золото',
+        'silver': 'Серебро',
+        'platinum': 'Платина',
+        'palladium': 'Палладий'
+    }
+
+    def __init__(self):
+        self.data = {}
+        self._load_data()
+
+    def _load_data(self):
+        """Загружаем данные из JSON файла"""
+        try:
+            file_path = os.path.join('parsed_data', 'metal_prices.json')
+            with open(file_path, 'r', encoding='utf-8') as f:
+                raw_data = json.load(f)
+                self.data = {
+                    date: {metal: Decimal(price) for metal, price in prices.items()}
+                    for date, prices in raw_data.items()
+                }
+
+            dates = sorted(self.data.keys())
+            if dates:
+                print(f"Загружены данные за период: {dates[0]} - {dates[-1]}")
+                print(f"Всего записей: {len(dates)}")
+
+        except FileNotFoundError:
+            raise FileNotFoundError("Файл с данными не найден. Сначала запустите парсер.")
+        except Exception as e:
+            raise Exception(f"Ошибка загрузки данных: {e}")
+
+    def _format_price(self, price):
+        """Форматирование цены с 4 знаками после запятой для удобства"""
+        return f"{float(price):.4f}".replace('.', ',')
+
+    def prices_by_date(self, target_date):
+        """Возвращает цены на все металлы на определенную дату"""
+        prices = self.data.get(target_date)
+        if prices:
+            return {metal: self._format_price(price) for metal, price in prices.items()}
+        return None
+
+    def prices_last(self):
+        """Возвращает последние цены на все металлы"""
+        if not self.data:
+            return None
+        last_date = sorted(self.data.keys())[-1]
+        prices = self.data[last_date]
+        return {metal: self._format_price(price) for metal, price in prices.items()}, last_date
+
+    def prices_range(self, from_date, to_date):
+        """Возвращает цены за период"""
+        result = []
+        for date, prices in sorted(self.data.items()):
+            if from_date <= date <= to_date:
+                formatted_prices = {metal: self._format_price(price) for metal, price in prices.items()}
+                result.append((date, formatted_prices))
+        return result
+
+    def get_available_metals(self):
+        """Возвращает список доступных металлов"""
+        return list(self.METAL_NAMES.keys())
+
+    def get_metal_display_name(self, metal):
+        """Возвращает русское название металла"""
+        return self.METAL_NAMES.get(metal, metal)
+
+
+def main():
+    """Главная функция программы"""
+    print("ПАРСЕР ЦЕН НА ДРАГОЦЕННЫЕ МЕТАЛЛЫ ЦБ РФ")
+    print("=" * 50)
+
+    # Проверяем, есть ли уже данные
+    data_file = os.path.join('parsed_data', 'metal_prices.json')
+    if not os.path.exists(data_file):
+        print("Данные не найдены. Запускаем сбор данных...")
+        parser = ParserCBRF()
+        if not parser.start():
+            print("Не удалось собрать данные. Программа завершена.")
+            return
+        print()
+
+    # Работа с данными
+    try:
+        metals_data = MetalPricesCBRF()
+    except Exception as e:
+        print(e)
+        return
+
+    while True:
+        print("\nВыберите действие:")
+        print("1. Узнать цены всех металлов на конкретную дату")
+        print("2. Узнать последние цены всех металлов")
+        print("3. Получить цены за период")
+        print("4. Выход")
+
+        choice = input("Ваш выбор (1-4): ").strip()
+
+        if choice == '1':
+            date = input("Введите дату в формате ГГГГ-ММ-ДД: ").strip()
+            prices = metals_data.prices_by_date(date)
+            if prices:
+                print(f"\nЦены на {date}:")
+                for metal, price in prices.items():
+                    metal_name = metals_data.get_metal_display_name(metal)
+                    print(f"  {metal_name}: {price} руб/г")
+            else:
+                print("Данные за указанную дату не найдены")
+
+        elif choice == '2':
+            prices, last_date = metals_data.prices_last()
+            if prices:
+                print(f"\nПоследние цены на {last_date}:")
+                for metal, price in prices.items():
+                    metal_name = metals_data.get_metal_display_name(metal)
+                    print(f"  {metal_name}: {price} руб/г")
+            else:
+                print("Данные не найдены")
+
+        elif choice == '3':
+            from_date = input("Введите начальную дату (ГГГГ-ММ-ДД): ").strip()
+            to_date = input("Введите конечную дату (ГГГГ-ММ-ДД): ").strip()
+
+            prices_range = metals_data.prices_range(from_date, to_date)
+            if prices_range:
+                print(f"\nЦены с {from_date} по {to_date}:")
+                print("-" * 50)
+                # Выводим ВСЕ записи без ограничений
+                for date, prices in prices_range:
+                    print(f"{date}:")
+                    for metal, price in prices.items():
+                        metal_name = metals_data.get_metal_display_name(metal)
+                        print(f"  {metal_name}: {price} руб/г")
+                    print()  # Пустая строка между датами
+                print(f"Всего дней: {len(prices_range)}")
+            else:
+                print("В указанном диапазоне данных нет")
+
+        elif choice == '4':
+            print("Выход из программы.")
+            break
+        else:
+            print("Неверный выбор. Попробуйте снова.")
+
+
+if __name__ == "__main__":
+    main()
